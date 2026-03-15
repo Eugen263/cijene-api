@@ -162,7 +162,7 @@ def _parse_osm_element(
     else:
         return None
 
-    if not lat or not lon:
+    if lat is None or lon is None:
         return None
 
     tags = elem.get("tags", {})

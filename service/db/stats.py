@@ -9,7 +9,7 @@ stored in the database. It can be used independently or as part of the import pr
 import argparse
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from time import time
 from typing import Union
 
@@ -20,19 +20,21 @@ logger = logging.getLogger("stats")
 db = settings.get_db()
 
 
-async def compute_stats(price_date: Union[datetime, str]) -> None:
+async def compute_stats(price_date: Union[date, datetime, str]) -> None:
     """
     Compute statistics for the given date.
 
     Args:
-        price_date: Either a datetime object or a date string in YYYY-MM-DD format
+        price_date: A date/datetime object or a date string in YYYY-MM-DD format
     """
     if isinstance(price_date, str):
         try:
-            price_date = datetime.strptime(price_date, "%Y-%m-%d")
+            price_date = datetime.strptime(price_date, "%Y-%m-%d").date()
         except ValueError:
             logger.error(f"Invalid date format: {price_date}. Expected YYYY-MM-DD")
             return
+    elif isinstance(price_date, datetime):
+        price_date = price_date.date()
 
     logger.info(f"Computing statistics for {price_date:%Y-%m-%d}")
 

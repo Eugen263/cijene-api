@@ -265,7 +265,7 @@ async def prepare_product_response(
     for product in product_response_map.values():
         if not product.brand:
             chain_brands = [cpr.brand for cpr in product.chains if cpr.brand]
-            chain_brands.sort(key=lambda x: len(x))
+            chain_brands.sort(key=lambda x: len(x), reverse=True)
             if chain_brands:
                 product.brand = chain_brands[0].capitalize()
 
