@@ -555,7 +555,7 @@ class PostgresDatabase(Database):
         async with self._atomic() as conn:
             await conn.execute(
                 """
-                CREATE TEMP TABLE temp_prices (
+                CREATE TEMP TABLE IF NOT EXISTS temp_prices (
                     chain_product_id INTEGER,
                     store_id INTEGER,
                     price_date DATE,
@@ -564,7 +564,8 @@ class PostgresDatabase(Database):
                     unit_price DECIMAL(10, 2),
                     best_price_30 DECIMAL(10, 2),
                     anchor_price DECIMAL(10, 2)
-                )
+                );
+                TRUNCATE temp_prices;
                 """
             )
             await conn.copy_records_to_table(
@@ -611,7 +612,7 @@ class PostgresDatabase(Database):
         async with self._atomic() as conn:
             await conn.execute(
                 """
-                CREATE TEMP TABLE temp_chain_products (
+                CREATE TEMP TABLE IF NOT EXISTS temp_chain_products (
                     chain_id INTEGER,
                     product_id INTEGER,
                     code VARCHAR(100),
@@ -620,7 +621,8 @@ class PostgresDatabase(Database):
                     category VARCHAR(255),
                     unit VARCHAR(50),
                     quantity VARCHAR(50)
-                )
+                );
+                TRUNCATE temp_chain_products;
                 """
             )
             await conn.copy_records_to_table(

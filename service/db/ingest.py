@@ -183,7 +183,10 @@ async def ingest_crawl_results(
             if not stores:
                 logger.warning(f"[{chain_code}] No stores to ingest, skipping")
                 continue
-            await ingest_chain(price_date, chain_code, stores, barcodes)
+            try:
+                await ingest_chain(price_date, chain_code, stores, barcodes)
+            except Exception as e:
+                logger.error(f"[{chain_code}] Ingest failed: {e}", exc_info=True)
 
         dt = int(time() - t0)
         logger.info(f"Ingested {len(chain_stores)} chains in {dt}s")
