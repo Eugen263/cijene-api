@@ -36,6 +36,7 @@ class ChainStats:
 class Store:
     chain_id: int
     code: str
+    name: Optional[str] = None
     type: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None

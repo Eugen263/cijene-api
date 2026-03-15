@@ -30,6 +30,7 @@ class StoreResponse(BaseModel):
 
     chain_code: str = Field(..., description="Code of the retail chain.")
     code: str = Field(..., description="Unique code of the store.")
+    name: str | None = Field(..., description="Display name of the store.")
     type: str | None = Field(
         ...,
         description="Type of the store (e.g., supermarket, hypermarket).",
@@ -70,6 +71,7 @@ async def list_stores(chain_code: str) -> ListStoresResponse:
             StoreResponse(
                 chain_code=chain_code,
                 code=store.code,
+                name=store.name,
                 type=store.type,
                 address=store.address,
                 city=store.city,
@@ -152,6 +154,7 @@ async def search_stores(
             StoreResponse(
                 chain_code=chains_map.get(store.chain_id, "unknown"),
                 code=store.code,
+                name=store.name,
                 type=store.type,
                 address=store.address,
                 city=store.city,

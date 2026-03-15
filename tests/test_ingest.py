@@ -2,6 +2,7 @@
 Tests for service/db/ingest.py pure functions and crawler/store/output.py transform_products.
 Run with: python -m pytest tests/ or python -m unittest tests/test_ingest.py
 """
+import datetime
 import sys
 import os
 import unittest
@@ -253,6 +254,128 @@ class TestTempTableSQL(unittest.TestCase):
             idx_truncate, idx_create,
             "TRUNCATE temp_prices must follow the CREATE TEMP TABLE",
         )
+
+
+# ── _write_github_summary ──────────────────────────────────────────────────────
+
+import io
+import tempfile
+from crawler.crawl import CrawlResult
+from crawler.cli.crawl import _write_github_summary
+
+
+class TestWriteGithubSummary(unittest.TestCase):
+    def _run(self, results: dict, date_str: str = "2026-03-15") -> str:
+        """Write summary to a temp file and return its contents."""
+        price_date = datetime.date.fromisoformat(date_str)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            tmp_path = f.name
+        import os
+        os.environ["GITHUB_STEP_SUMMARY"] = tmp_path
+        try:
+            _write_github_summary(results, price_date)
+            with open(tmp_path) as f:
+                return f.read()
+        finally:
+            del os.environ["GITHUB_STEP_SUMMARY"]
+            os.unlink(tmp_path)
+
+    def test_no_env_var_does_nothing(self):
+        """No output when GITHUB_STEP_SUMMARY is not set."""
+        import os
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        # Should not raise and return immediately
+        _write_github_summary({}, datetime.date(2026, 3, 15))
+
+    def test_header_contains_date(self):
+        results = {"konzum": CrawlResult(n_stores=5, n_products=100, n_prices=500, elapsed_time=2.0)}
+        output = self._run(results)
+        self.assertIn("2026-03-15", output)
+        self.assertIn("## Crawl Summary", output)
+
+    def test_successful_chain_shows_checkmark(self):
+        results = {"konzum": CrawlResult(n_stores=3, n_products=50, n_prices=150, elapsed_time=1.5)}
+        output = self._run(results)
+        self.assertIn("✅", output)
+        self.assertIn("konzum", output)
+
+    def test_failed_chain_shows_cross(self):
+        results = {"dm": CrawlResult(n_stores=0, n_products=0, n_prices=0, elapsed_time=0.0)}
+        output = self._run(results)
+        self.assertIn("❌", output)
+        self.assertIn("Failed chains", output)
+        self.assertIn("dm", output)
+
+    def test_totals_line(self):
+        results = {
+            "konzum": CrawlResult(n_stores=2, n_products=10, n_prices=20, elapsed_time=1.0),
+            "lidl": CrawlResult(n_stores=3, n_products=15, n_prices=45, elapsed_time=1.5),
+        }
+        output = self._run(results)
+        self.assertIn("5 stores", output)
+        self.assertIn("25 products", output)
+        self.assertIn("65 prices", output)
+
+    def test_mixed_results(self):
+        results = {
+            "konzum": CrawlResult(n_stores=5, n_products=100, n_prices=500, elapsed_time=2.0),
+            "dm": CrawlResult(n_stores=0, n_products=0, n_prices=0, elapsed_time=0.1),
+        }
+        output = self._run(results)
+        self.assertIn("✅", output)
+        self.assertIn("❌", output)
+
+
+# ── Store model has name field ─────────────────────────────────────────────────
+
+from service.db.models import Store as DbStore
+
+
+class TestStoreModel(unittest.TestCase):
+    def test_store_accepts_name(self):
+        store = DbStore(chain_id=1, code="ST01", name="Konzum Ilica")
+        self.assertEqual(store.name, "Konzum Ilica")
+
+    def test_store_name_defaults_to_none(self):
+        store = DbStore(chain_id=1, code="ST01")
+        self.assertIsNone(store.name)
+
+    def test_store_with_all_fields(self):
+        store = DbStore(
+            chain_id=1, code="ST01", name="Test Store",
+            type="supermarket", address="Ilica 1", city="Zagreb",
+            zipcode="10000", lat=45.81, lon=15.98,
+        )
+        self.assertEqual(store.name, "Test Store")
+        self.assertEqual(store.city, "Zagreb")
+
+
+# ── enrich SQL pattern check ───────────────────────────────────────────────────
+
+class TestEnrichSQL(unittest.TestCase):
+    def _get_psql_source(self):
+        with open("service/db/psql.py") as f:
+            return f.read()
+
+    def test_enrich_method_exists(self):
+        source = self._get_psql_source()
+        self.assertIn("enrich_products_from_chain_data", source)
+
+    def test_enrich_uses_coalesce(self):
+        source = self._get_psql_source()
+        idx = source.find("enrich_products_from_chain_data")
+        snippet = source[idx:idx + 500]
+        self.assertIn("COALESCE", snippet)
+
+    def test_get_chain_products_by_codes_exists(self):
+        source = self._get_psql_source()
+        self.assertIn("get_chain_products_by_codes", source)
+
+    def test_get_chain_products_by_codes_uses_any(self):
+        source = self._get_psql_source()
+        idx = source.find("get_chain_products_by_codes")
+        snippet = source[idx:idx + 500]
+        self.assertIn("ANY", snippet)
 
 
 if __name__ == "__main__":

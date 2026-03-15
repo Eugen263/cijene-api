@@ -373,6 +373,40 @@ class Database(ABC):
         pass
 
     @abstractmethod
+    async def get_chain_products_by_codes(
+        self, chain_id: int, codes: list[str]
+    ) -> dict[str, int]:
+        """
+        Get chain product code→id mapping for specific codes only.
+
+        More efficient than get_chain_product_map when only a few new
+        codes need to be resolved after insertion.
+
+        Args:
+            chain_id: The ID of the chain.
+            codes: Product codes to look up.
+
+        Returns:
+            A dictionary mapping product codes to their database IDs.
+        """
+        pass
+
+    @abstractmethod
+    async def enrich_products_from_chain_data(self, chain_id: int) -> int:
+        """
+        Update the products table with brand/name/unit data from chain_products.
+
+        Only fills NULL fields — existing product data is preserved.
+
+        Args:
+            chain_id: Only use chain_products from this chain.
+
+        Returns:
+            Number of product rows updated.
+        """
+        pass
+
+    @abstractmethod
     async def get_stores_without_location(self) -> list[StoreWithId]:
         """
         Get all stores that have address/city data but no lat/lon coordinates.
