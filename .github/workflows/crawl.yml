@@ -2,7 +2,7 @@ name: Crawl and Import
 
 on:
   schedule:
-    - cron: "0 4 * * *" # Daily at 4 AM UTC (6 AM Zagreb time)
+    - cron: "0 8 * * *" # Daily at 8 AM UTC (10 AM Zagreb time)
   workflow_dispatch:
     inputs:
       date:
@@ -46,7 +46,7 @@ jobs:
           if [ -n "${{ inputs.chains }}" ]; then
             ARGS="$ARGS --chain ${{ inputs.chains }}"
           fi
-          uv run -m crawler.cli.crawl /tmp/cijene-output $ARGS
+          uv run -m crawler.cli.crawl /tmp/cijene-output --verbose info $ARGS
 
       - name: Determine output date
         id: date
@@ -65,9 +65,9 @@ jobs:
           ZIP="/tmp/cijene-output/$DATE.zip"
           DIR="/tmp/cijene-output/$DATE"
           if [ -f "$ZIP" ]; then
-            uv run -m service.db.import "$ZIP"
+            uv run -m service.db.import --debug "$ZIP"
           elif [ -d "$DIR" ]; then
-            uv run -m service.db.import "$DIR"
+            uv run -m service.db.import --debug "$DIR"
           else
             echo "No output found for date $DATE"
             exit 1
