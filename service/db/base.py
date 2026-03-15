@@ -373,6 +373,16 @@ class Database(ABC):
         pass
 
     @abstractmethod
+    async def get_stores_without_location(self) -> list[StoreWithId]:
+        """
+        Get all stores that have address/city data but no lat/lon coordinates.
+
+        Returns:
+            A list of StoreWithId objects without location coordinates.
+        """
+        pass
+
+    @abstractmethod
     async def get_user_by_api_key(self, api_key: str) -> User | None:
         """
         Get active user by API key.

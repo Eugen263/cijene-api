@@ -1,0 +1,87 @@
+name: Crawl and Import
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # Daily at 4 AM UTC (6 AM Zagreb time)
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Date to crawl (YYYY-MM-DD, defaults to today)"
+        required: false
+        type: string
+      chains:
+        description: "Comma-separated chain codes (defaults to all)"
+        required: false
+        type: string
+      skip_geocode:
+        description: "Skip geocoding step"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  crawl-and-import:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run crawler
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.date }}" ]; then
+            ARGS="$ARGS --date ${{ inputs.date }}"
+          fi
+          if [ -n "${{ inputs.chains }}" ]; then
+            ARGS="$ARGS --chain ${{ inputs.chains }}"
+          fi
+          uv run -m crawler.cli.crawl /tmp/cijene-output $ARGS
+
+      - name: Determine output date
+        id: date
+        run: |
+          if [ -n "${{ inputs.date }}" ]; then
+            echo "value=${{ inputs.date }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import data into database
+        env:
+          DB_DSN: postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ vars.DB_HOST }}:${{ vars.DB_PORT }}/${{ vars.DB_NAME }}
+        run: |
+          DATE="${{ steps.date.outputs.value }}"
+          ZIP="/tmp/cijene-output/$DATE.zip"
+          DIR="/tmp/cijene-output/$DATE"
+          if [ -f "$ZIP" ]; then
+            uv run -m service.db.import "$ZIP"
+          elif [ -d "$DIR" ]; then
+            uv run -m service.db.import "$DIR"
+          else
+            echo "No output found for date $DATE"
+            exit 1
+          fi
+
+      - name: Geocode new stores
+        if: ${{ !inputs.skip_geocode }}
+        env:
+          DB_DSN: postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ vars.DB_HOST }}:${{ vars.DB_PORT }}/${{ vars.DB_NAME }}
+        run: uv run -m service.db.geocode
+
+      - name: Upload archive as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: price-data-${{ steps.date.outputs.value }}
+          path: /tmp/cijene-output/*.zip
+          retention-days: 30

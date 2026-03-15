@@ -744,6 +744,18 @@ class PostgresDatabase(Database):
                     record["store_count"],
                 )
 
+    async def get_stores_without_location(self) -> list[StoreWithId]:
+        async with self._get_conn() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, chain_id, code, type, address, city, zipcode, lat, lon, phone
+                FROM stores
+                WHERE lat IS NULL AND (address IS NOT NULL OR city IS NOT NULL)
+                ORDER BY chain_id, code
+                """
+            )
+            return [StoreWithId(**row) for row in rows]  # type: ignore
+
     async def get_user_by_api_key(self, api_key: str) -> User | None:
         async with self._get_conn() as conn:
             row = await conn.fetchrow(
