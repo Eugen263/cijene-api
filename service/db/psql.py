@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -50,6 +51,8 @@ class PostgresDatabase(Database):
             dsn=self.dsn,
             min_size=self.min_size,
             max_size=self.max_size,
+            # Recycle connections idle >5 min to avoid server-side timeouts
+            max_inactive_connection_lifetime=300,
         )
 
     @asynccontextmanager
@@ -555,7 +558,26 @@ class PostgresDatabase(Database):
                 date,
             )
 
+    _CONNECTION_ERRORS = (
+        asyncpg.InterfaceError,
+        asyncpg.ConnectionDoesNotExistError,
+        OSError,
+    )
+
     async def add_many_prices(self, prices: list[Price]) -> int:
+        for attempt in range(3):
+            try:
+                return await self._add_many_prices(prices)
+            except self._CONNECTION_ERRORS as e:
+                if attempt == 2:
+                    raise
+                self.logger.warning(
+                    f"Connection error in add_many_prices (attempt {attempt + 1}/3): {e}, retrying..."
+                )
+                await asyncio.sleep(2 ** attempt)
+        return 0  # unreachable
+
+    async def _add_many_prices(self, prices: list[Price]) -> int:
         async with self._atomic() as conn:
             await conn.execute(
                 """
@@ -610,6 +632,22 @@ class PostgresDatabase(Database):
             return rowcount
 
     async def add_many_chain_products(
+        self,
+        chain_products: List[ChainProduct],
+    ) -> int:
+        for attempt in range(3):
+            try:
+                return await self._add_many_chain_products(chain_products)
+            except self._CONNECTION_ERRORS as e:
+                if attempt == 2:
+                    raise
+                self.logger.warning(
+                    f"Connection error in add_many_chain_products (attempt {attempt + 1}/3): {e}, retrying..."
+                )
+                await asyncio.sleep(2 ** attempt)
+        return 0  # unreachable
+
+    async def _add_many_chain_products(
         self,
         chain_products: List[ChainProduct],
     ) -> int:
