@@ -176,6 +176,7 @@ class PostgresDatabase(Database):
         chain_id: int,
         store_code: str,
         *,
+        name: str | None = None,
         address: str | None = None,
         city: str | None = None,
         zipcode: str | None = None,
@@ -192,16 +193,18 @@ class PostgresDatabase(Database):
                 """
                 UPDATE stores
                 SET
-                    address = COALESCE($3, stores.address),
-                    city = COALESCE($4, stores.city),
-                    zipcode = COALESCE($5, stores.zipcode),
-                    lat = COALESCE($6, stores.lat),
-                    lon = COALESCE($7, stores.lon),
-                    phone = COALESCE($8, stores.phone)
+                    name = COALESCE($3, stores.name),
+                    address = COALESCE($4, stores.address),
+                    city = COALESCE($5, stores.city),
+                    zipcode = COALESCE($6, stores.zipcode),
+                    lat = COALESCE($7, stores.lat),
+                    lon = COALESCE($8, stores.lon),
+                    phone = COALESCE($9, stores.phone)
                 WHERE chain_id = $1 AND code = $2
                 """,
                 chain_id,
                 store_code,
+                name or None,
                 address or None,
                 city or None,
                 zipcode or None,

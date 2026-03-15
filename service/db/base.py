@@ -89,6 +89,7 @@ class Database(ABC):
         chain_id: int,
         store_code: str,
         *,
+        name: str | None = None,
         address: str | None = None,
         city: str | None = None,
         zipcode: str | None = None,

@@ -281,7 +281,8 @@ async def locate_stores(dry_run: bool = False) -> None:
 
                 if existing:
                     needs_update = (
-                        (osm.lat and existing.lat is None)
+                        (osm.name and existing.name is None)
+                        or (osm.lat and existing.lat is None)
                         or (osm.lon and existing.lon is None)
                         or (osm.address and existing.address is None)
                         or (osm.city and existing.city is None)
@@ -303,6 +304,7 @@ async def locate_stores(dry_run: bool = False) -> None:
                         await db.update_store(
                             chain_id,
                             existing.code,
+                            name=osm.name if existing.name is None else None,
                             address=osm.address if existing.address is None else None,
                             city=osm.city if existing.city is None else None,
                             zipcode=osm.zipcode if existing.zipcode is None else None,
