@@ -30,8 +30,8 @@ from service.db.models import Chain, Store as DbStore, StoreWithId
 logger = logging.getLogger("store_locator")
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-OVERPASS_TIMEOUT = 60
-HTTP_TIMEOUT = 90.0
+OVERPASS_TIMEOUT = 180  # seconds for the Overpass QL query itself
+HTTP_TIMEOUT = 200.0    # HTTP transport timeout — must exceed OVERPASS_TIMEOUT
 
 # Maps chain code → list of OSM brand name variants to search for.
 CHAIN_BRANDS: dict[str, list[str]] = {
@@ -209,6 +209,14 @@ async def fetch_osm_stores(client: httpx.AsyncClient) -> dict[str, list[OsmStore
 
     data = response.json()
     elements = data.get("elements", [])
+
+    if not elements:
+        logger.warning(
+            "Overpass returned 0 elements — possible query timeout or API issue. "
+            "Try increasing OVERPASS_TIMEOUT."
+        )
+        return {}
+
     logger.info(f"Overpass returned {len(elements)} elements")
 
     result: dict[str, list[OsmStore]] = {code: [] for code in CHAIN_BRANDS}
