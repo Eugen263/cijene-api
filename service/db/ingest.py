@@ -13,6 +13,7 @@ lost if the run is interrupted.
 
 service/db/import.py is kept for manual re-imports of historical ZIP archives.
 """
+import asyncio
 import logging
 from datetime import date
 from decimal import Decimal
@@ -190,14 +191,19 @@ async def ingest_crawl_results(
     price_date: date,
     chain_stores: dict[str, list[CrawlerStore]],
     compute_stats_flag: bool = True,
+    max_concurrent_chains: int = 5,
 ) -> None:
     """
     Ingest crawl results from all chains directly into the database.
+
+    Chains are ingested concurrently (up to max_concurrent_chains at a time).
+    Chains that already have stats for price_date are skipped automatically.
 
     Args:
         price_date: Date for which the prices are valid.
         chain_stores: Mapping of chain_code -> list of crawler Store objects.
         compute_stats_flag: Whether to compute chain stats after import.
+        max_concurrent_chains: Max number of chains to ingest simultaneously.
     """
     await db.connect()
 
@@ -206,17 +212,27 @@ async def ingest_crawl_results(
 
         t0 = time()
         barcodes = await db.get_product_barcodes()
+        semaphore = asyncio.Semaphore(max_concurrent_chains)
 
-        for chain_code, stores in chain_stores.items():
+        async def _ingest_one(chain_code: str, stores: list[CrawlerStore]) -> None:
             if not stores:
                 logger.warning(f"[{chain_code}] No stores to ingest, skipping")
-                continue
-            try:
-                n_prices = sum(len(s.items) for s in stores)
-                logger.info(f"[{chain_code}] Ingesting {len(stores)} stores, {n_prices} prices ...")
-                await ingest_chain(price_date, chain_code, stores, barcodes)
-            except Exception as e:
-                logger.error(f"[{chain_code}] Ingest failed: {e}", exc_info=True)
+                return
+            if await db.chain_has_stats(chain_code, price_date):
+                logger.info(f"[{chain_code}] Already imported for {price_date:%Y-%m-%d}, skipping")
+                return
+            async with semaphore:
+                try:
+                    n_prices = sum(len(s.items) for s in stores)
+                    logger.info(f"[{chain_code}] Ingesting {len(stores)} stores, {n_prices} prices ...")
+                    await ingest_chain(price_date, chain_code, stores, barcodes)
+                except Exception as e:
+                    logger.error(f"[{chain_code}] Ingest failed: {e}", exc_info=True)
+
+        await asyncio.gather(*[
+            _ingest_one(chain_code, stores)
+            for chain_code, stores in chain_stores.items()
+        ])
 
         dt = int(time() - t0)
         logger.info(f"Ingested {len(chain_stores)} chains in {dt}s")

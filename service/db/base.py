@@ -422,6 +422,16 @@ class Database(ABC):
         pass
 
     @abstractmethod
+    async def chain_has_stats(self, chain_code: str, price_date: date) -> bool:
+        """
+        Return True if chain_stats already has a row for this chain and date.
+
+        Used to skip re-ingesting chains that were successfully imported in a
+        previous run (e.g. after a partial failure or manual re-trigger).
+        """
+        pass
+
+    @abstractmethod
     async def get_stores_without_location(self) -> list[StoreWithId]:
         """
         Get all stores that have address/city data but no lat/lon coordinates.

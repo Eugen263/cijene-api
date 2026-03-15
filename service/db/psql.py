@@ -642,7 +642,6 @@ class PostgresDatabase(Database):
                 ON CONFLICT DO NOTHING
                 """
             )
-            await conn.execute("DROP TABLE temp_prices")
             _, _, rowcount = result.split(" ")
             rowcount = int(rowcount)
             return rowcount
@@ -716,8 +715,6 @@ class PostgresDatabase(Database):
                 ON CONFLICT DO NOTHING
                 """
             )
-            await conn.execute("DROP TABLE temp_chain_products")
-
             _, _, rowcount = result.split(" ")
             rowcount = int(rowcount)
             return rowcount
@@ -815,6 +812,20 @@ class PostgresDatabase(Database):
                 """
             )
             return [StoreWithId(**row) for row in rows]  # type: ignore
+
+    async def chain_has_stats(self, chain_code: str, price_date: date) -> bool:
+        async with self._get_conn() as conn:
+            return await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM chain_stats cs
+                    JOIN chains c ON c.id = cs.chain_id
+                    WHERE c.code = $1 AND cs.price_date = $2
+                )
+                """,
+                chain_code,
+                price_date,
+            )
 
     async def get_chain_products_by_codes(
         self, chain_id: int, codes: list[str]
