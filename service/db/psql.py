@@ -309,6 +309,22 @@ class PostgresDatabase(Database):
             ean,
         )
 
+    async def add_many_eans(self, eans: list[str]) -> dict[str, int]:
+        async with self._get_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO products (ean)
+                SELECT unnest($1::text[])
+                ON CONFLICT (ean) DO NOTHING
+                """,
+                eans,
+            )
+            rows = await conn.fetch(
+                "SELECT ean, id FROM products WHERE ean = ANY($1)",
+                eans,
+            )
+            return {row["ean"]: row["id"] for row in rows}
+
     async def get_products_by_ean(self, ean: list[str]) -> list[ProductWithId]:
         async with self._get_conn() as conn:
             rows = await conn.fetch(

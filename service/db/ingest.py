@@ -115,14 +115,26 @@ async def ingest_chain(
         ))
 
         # --- new products for this store ---
+        # First pass: collect barcodes that need EAN rows (batch insert, not one-by-one)
+        new_barcodes: set[str] = set()
+        for product in store.items:
+            if product.product_id in chain_product_map:
+                continue
+            barcode = _get_barcode(product, chain_code)
+            if barcode and barcode not in barcodes:
+                new_barcodes.add(barcode)
+
+        if new_barcodes:
+            new_ids = await db.add_many_eans(list(new_barcodes))
+            barcodes.update(new_ids)
+
+        # Second pass: build chain products for anything not yet in the map
         new_chain_products = []
         for product in store.items:
             if product.product_id in chain_product_map:
                 continue
 
             barcode = _get_barcode(product, chain_code)
-            if barcode not in barcodes:
-                barcodes[barcode] = await db.add_ean(barcode)
 
             new_chain_products.append(ChainProduct(
                 chain_id=chain_id,

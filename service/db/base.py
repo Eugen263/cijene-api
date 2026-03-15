@@ -192,6 +192,21 @@ class Database(ABC):
         pass
 
     @abstractmethod
+    async def add_many_eans(self, eans: list[str]) -> dict[str, int]:
+        """
+        Add multiple products by EAN in a single batch operation.
+
+        Existing EANs are ignored (ON CONFLICT DO NOTHING).
+
+        Args:
+            eans: List of EAN codes to add.
+
+        Returns:
+            A dictionary mapping every requested EAN to its product ID.
+        """
+        pass
+
+    @abstractmethod
     async def get_products_by_ean(self, ean: list[str]) -> list[ProductWithId]:
         """
         Get products by their EAN codes.
