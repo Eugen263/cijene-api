@@ -30,8 +30,10 @@ from service.db.models import Chain, Store as DbStore, StoreWithId
 logger = logging.getLogger("store_locator")
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-OVERPASS_TIMEOUT = 180  # seconds for the Overpass QL query itself
-HTTP_TIMEOUT = 200.0    # HTTP transport timeout — must exceed OVERPASS_TIMEOUT
+OVERPASS_TIMEOUT = 120      # seconds for the Overpass QL query itself
+HTTP_TIMEOUT = 140.0        # HTTP transport timeout — must exceed OVERPASS_TIMEOUT
+OVERPASS_RETRY_DELAY = 60   # seconds to wait before retrying the single big query
+OVERPASS_PAGED_DELAY = 15   # seconds between per-chain requests when paging
 
 # Maps chain code → list of OSM brand name variants to search for.
 CHAIN_BRANDS: dict[str, list[str]] = {
@@ -113,10 +115,10 @@ def _find_nearby(
     return best
 
 
-def _build_overpass_query() -> str:
-    """Build a single Overpass QL query for all chain brands in Croatia."""
+def _build_query(brands_by_chain: dict[str, list[str]]) -> str:
+    """Build an Overpass QL query for one or more chains."""
     unions = []
-    for brands in CHAIN_BRANDS.values():
+    for brands in brands_by_chain.values():
         for brand in brands:
             escaped = brand.replace('"', '\\"')
             unions.append(f'  node["brand"="{escaped}"]["shop"](area.croatia);')
@@ -125,27 +127,14 @@ def _build_overpass_query() -> str:
             unions.append(f'  node["name"="{escaped}"]["shop"](area.croatia);')
             unions.append(f'  way["name"="{escaped}"]["shop"](area.croatia);')
 
-    return f"""
-[out:json][timeout:{OVERPASS_TIMEOUT}];
-area["ISO3166-1"="HR"]->.croatia;
-(
-{chr(10).join(unions)}
-);
-out center tags;
-"""
-
-
-def _classify_element(tags: dict) -> Optional[str]:
-    """Return the chain_code that best matches this OSM element's tags."""
-    brand = tags.get("brand", "").lower()
-    name = tags.get("name", "").lower()
-
-    for chain_code, variants in CHAIN_BRANDS.items():
-        for variant in variants:
-            v = variant.lower()
-            if brand == v or name == v:
-                return chain_code
-    return None
+    return (
+        f'[out:json][timeout:{OVERPASS_TIMEOUT}];\n'
+        f'area["ISO3166-1"="HR"]->.croatia;\n'
+        f'(\n'
+        f'{chr(10).join(unions)}\n'
+        f');\n'
+        f'out center tags;\n'
+    )
 
 
 def _parse_osm_element(
@@ -187,15 +176,52 @@ def _parse_osm_element(
     )
 
 
-async def fetch_osm_stores(client: httpx.AsyncClient) -> dict[str, list[OsmStore]]:
-    """
-    Fetch all grocery stores in Croatia from OSM grouped by chain code.
+def _parse_elements(
+    elements: list[dict],
+) -> dict[str, list[OsmStore]]:
+    """Parse a list of OSM elements into a chain_code → stores mapping."""
+    result: dict[str, list[OsmStore]] = {code: [] for code in CHAIN_BRANDS}
+    seen: set[str] = set()
 
-    Returns a dict mapping chain_code → list[OsmStore].
-    """
-    query = _build_overpass_query()
-    logger.info("Querying Overpass API for all chain stores in Croatia...")
+    for elem in elements:
+        osm_type = elem.get("type", "")
+        osm_id = elem.get("id", 0)
+        osm_key = f"{osm_type}/{osm_id}"
+        if osm_key in seen:
+            continue
+        seen.add(osm_key)
 
+        tags = elem.get("tags", {})
+        chain_code = _classify_element(tags)
+        if not chain_code:
+            continue
+
+        store = _parse_osm_element(elem, chain_code, osm_type, osm_id)
+        if store:
+            result[chain_code].append(store)
+
+    return result
+
+
+def _classify_element(tags: dict) -> Optional[str]:
+    """Return the chain_code that best matches this OSM element's tags."""
+    brand = tags.get("brand", "").lower()
+    name = tags.get("name", "").lower()
+
+    for chain_code, variants in CHAIN_BRANDS.items():
+        for variant in variants:
+            v = variant.lower()
+            if brand == v or name == v:
+                return chain_code
+    return None
+
+
+async def _post_query(
+    client: httpx.AsyncClient, query: str, label: str
+) -> list[dict] | None:
+    """
+    POST a query to Overpass. Returns elements list or None on failure.
+    """
     try:
         response = await client.post(
             OVERPASS_URL,
@@ -203,47 +229,69 @@ async def fetch_osm_stores(client: httpx.AsyncClient) -> dict[str, list[OsmStore
             timeout=HTTP_TIMEOUT,
         )
         response.raise_for_status()
+        return response.json().get("elements", [])
     except httpx.HTTPError as e:
-        logger.error(f"Overpass API request failed: {e}")
-        return {}
+        logger.warning(f"Overpass request failed [{label}]: {e}")
+        return None
 
-    data = response.json()
-    elements = data.get("elements", [])
 
-    if not elements:
-        logger.warning(
-            "Overpass returned 0 elements — possible query timeout or API issue. "
-            "Try increasing OVERPASS_TIMEOUT."
-        )
-        return {}
+async def fetch_osm_stores(client: httpx.AsyncClient) -> dict[str, list[OsmStore]]:
+    """
+    Fetch all grocery stores in Croatia from OSM.
 
-    logger.info(f"Overpass returned {len(elements)} elements")
+    Strategy:
+    1. Try a single combined query for all chains (fast, ~60s).
+    2. On failure, retry once after OVERPASS_RETRY_DELAY seconds.
+    3. If still failing, fall back to one request per chain with
+       OVERPASS_PAGED_DELAY seconds between requests.
 
+    Returns a dict mapping chain_code → list[OsmStore].
+    """
+    logger.info(f"Querying Overpass API for {len(CHAIN_BRANDS)} chains...")
+
+    # --- attempt 1: single combined query ---
+    query = _build_query(CHAIN_BRANDS)
+    elements = await _post_query(client, query, "all chains")
+
+    if elements is None:
+        logger.info(f"Retrying in {OVERPASS_RETRY_DELAY}s...")
+        await asyncio.sleep(OVERPASS_RETRY_DELAY)
+        elements = await _post_query(client, query, "all chains retry")
+
+    if elements is not None:
+        result = _parse_elements(elements)
+        total = sum(len(v) for v in result.values())
+        logger.info(f"Overpass complete: {total} stores (single query)")
+        return result
+
+    # --- fallback: one request per chain ---
+    logger.warning(
+        f"Single query failed twice — falling back to per-chain paging "
+        f"({OVERPASS_PAGED_DELAY}s delay between requests)"
+    )
     result: dict[str, list[OsmStore]] = {code: [] for code in CHAIN_BRANDS}
-    seen: set[str] = set()
+    chains = list(CHAIN_BRANDS.items())
 
-    for elem in elements:
-        osm_type = elem.get("type", "")
-        osm_id = elem.get("id", 0)
-        tags = elem.get("tags", {})
+    for i, (chain_code, brands) in enumerate(chains):
+        chain_query = _build_query({chain_code: brands})
+        chain_elements = await _post_query(client, chain_query, chain_code)
 
-        chain_code = _classify_element(tags)
-        if not chain_code:
-            continue
+        if chain_elements is not None:
+            for elem in chain_elements:
+                osm_type = elem.get("type", "")
+                osm_id = elem.get("id", 0)
+                store = _parse_osm_element(elem, chain_code, osm_type, osm_id)
+                if store:
+                    result[chain_code].append(store)
+            logger.debug(f"[{chain_code}] {len(result[chain_code])} stores")
+        else:
+            logger.warning(f"[{chain_code}] skipped after Overpass failure")
 
-        osm_key = f"{osm_type}/{osm_id}"
-        if osm_key in seen:
-            continue
-        seen.add(osm_key)
+        if i < len(chains) - 1:
+            await asyncio.sleep(OVERPASS_PAGED_DELAY)
 
-        store = _parse_osm_element(elem, chain_code, osm_type, osm_id)
-        if store:
-            result[chain_code].append(store)
-
-    for code, stores in result.items():
-        if stores:
-            logger.debug(f"  {code}: {len(stores)} OSM stores")
-
+    total = sum(len(v) for v in result.values())
+    logger.info(f"Overpass complete: {total} stores (paged)")
     return result
 
 
