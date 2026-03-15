@@ -134,7 +134,7 @@ def crawl(
     date: datetime.date | None = None,
     chains: list[str] | None = None,
     db_direct: bool = False,
-) -> tuple[Path, dict[str, list] | None]:
+) -> tuple[Path, dict[str, list] | None, dict[str, "CrawlResult"]]:
     """
     Crawl multiple retail chains for product/pricing data and save it.
 
@@ -146,8 +146,9 @@ def crawl(
             CSVs and ZIP archive are always written regardless of this flag.
 
     Returns:
-        Tuple of (zip_path, chain_stores) where chain_stores is a dict mapping
-        chain code to list of Store objects when db_direct=True, or None otherwise.
+        Tuple of (zip_path, chain_stores, results) where chain_stores is a dict
+        mapping chain code to list of Store objects when db_direct=True (or None),
+        and results maps chain code to CrawlResult for all chains.
     """
 
     if chains is None:
@@ -175,6 +176,10 @@ def crawl(
             f"  * {chain}: {r.n_stores} stores, {r.n_products} products, {r.n_prices} prices in {r.elapsed_time:.2f}s"
         )
 
+    failed = [chain for chain, r in results.items() if r.n_stores == 0]
+    if failed:
+        logger.warning(f"Chains with 0 stores (failed or no data): {', '.join(failed)}")
+
     copy_archive_info(path)
     create_archive(path, zip_path)
 
@@ -188,4 +193,4 @@ def crawl(
             if r.stores is not None
         }
 
-    return zip_path, chain_stores
+    return zip_path, chain_stores, results

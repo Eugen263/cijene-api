@@ -192,6 +192,21 @@ class Database(ABC):
         pass
 
     @abstractmethod
+    async def add_many_eans(self, eans: list[str]) -> dict[str, int]:
+        """
+        Add multiple products by EAN in a single batch operation.
+
+        Existing EANs are ignored (ON CONFLICT DO NOTHING).
+
+        Args:
+            eans: List of EAN codes to add.
+
+        Returns:
+            A dictionary mapping every requested EAN to its product ID.
+        """
+        pass
+
+    @abstractmethod
     async def get_products_by_ean(self, ean: list[str]) -> list[ProductWithId]:
         """
         Get products by their EAN codes.
@@ -369,6 +384,50 @@ class Database(ABC):
 
         Returns:
             A list of StorePrice objects
+        """
+        pass
+
+    @abstractmethod
+    async def get_chain_products_by_codes(
+        self, chain_id: int, codes: list[str]
+    ) -> dict[str, int]:
+        """
+        Get chain product code→id mapping for specific codes only.
+
+        More efficient than get_chain_product_map when only a few new
+        codes need to be resolved after insertion.
+
+        Args:
+            chain_id: The ID of the chain.
+            codes: Product codes to look up.
+
+        Returns:
+            A dictionary mapping product codes to their database IDs.
+        """
+        pass
+
+    @abstractmethod
+    async def enrich_products_from_chain_data(self, chain_id: int) -> int:
+        """
+        Update the products table with brand/name/unit data from chain_products.
+
+        Only fills NULL fields — existing product data is preserved.
+
+        Args:
+            chain_id: Only use chain_products from this chain.
+
+        Returns:
+            Number of product rows updated.
+        """
+        pass
+
+    @abstractmethod
+    async def chain_has_stats(self, chain_code: str, price_date: date) -> bool:
+        """
+        Return True if chain_stats already has a row for this chain and date.
+
+        Used to skip re-ingesting chains that were successfully imported in a
+        previous run (e.g. after a partial failure or manual re-trigger).
         """
         pass
 

@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import datetime
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -46,6 +47,35 @@ def setup_logging(log_level, db_direct: bool = False):
     for logger_name in logging.root.manager.loggerDict:
         if not any(logger_name.startswith(p) for p in allowed_prefixes):
             logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+
+def _write_github_summary(results: dict, price_date: datetime.date) -> None:
+    """Write a markdown job summary to $GITHUB_STEP_SUMMARY if running in GitHub Actions."""
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+
+    total_stores = sum(r.n_stores for r in results.values())
+    total_products = sum(r.n_products for r in results.values())
+    total_prices = sum(r.n_prices for r in results.values())
+    failed = [c for c, r in results.items() if r.n_stores == 0]
+
+    with open(summary_path, "a") as f:
+        f.write(f"## Crawl Summary — {price_date:%Y-%m-%d}\n\n")
+        if failed:
+            f.write(f"> **Failed chains ({len(failed)}):** {', '.join(failed)}\n\n")
+        f.write("| Chain | Stores | Products | Prices | Time |\n")
+        f.write("|-------|-------:|--------:|-------:|------:|\n")
+        for chain, r in results.items():
+            icon = "✅" if r.n_stores > 0 else "❌"
+            f.write(
+                f"| {icon} {chain} | {r.n_stores} | {r.n_products} | "
+                f"{r.n_prices} | {r.elapsed_time:.1f}s |\n"
+            )
+        f.write(
+            f"\n**Total:** {total_stores} stores, "
+            f"{total_products} products, {total_prices} prices\n"
+        )
 
 
 def main():
@@ -136,7 +166,7 @@ def main():
         date_txt = args.date.strftime("%Y-%m-%d") if args.date else "today"
         print(f"Fetching price data from {chains_txt} for {date_txt} ...", flush=True)
 
-        zip_path, chain_stores = crawl(
+        zip_path, chain_stores, crawl_results = crawl(
             args.output_path,
             crawl_date,
             chains_to_crawl,
@@ -144,11 +174,12 @@ def main():
         )
         print(f"Archive created: {zip_path}")
 
+        effective_date = crawl_date or datetime.date.today()
+
         if args.db_direct and chain_stores:
             # Lazy import keeps the crawler usable without asyncpg installed
             from service.db.ingest import ingest_crawl_results
 
-            effective_date = crawl_date or datetime.date.today()
             print(f"Ingesting data into database for {effective_date:%Y-%m-%d} ...", flush=True)
             asyncio.run(
                 ingest_crawl_results(
@@ -158,6 +189,8 @@ def main():
                 )
             )
             print("Database import complete.")
+
+        _write_github_summary(crawl_results, effective_date)
 
         return 0
     except Exception as e:

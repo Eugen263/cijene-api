@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -50,6 +51,8 @@ class PostgresDatabase(Database):
             dsn=self.dsn,
             min_size=self.min_size,
             max_size=self.max_size,
+            # Recycle connections idle >5 min to avoid server-side timeouts
+            max_inactive_connection_lifetime=300,
         )
 
     @asynccontextmanager
@@ -149,17 +152,19 @@ class PostgresDatabase(Database):
     async def add_store(self, store: Store) -> int:
         return await self._fetchval(
             """
-            INSERT INTO stores (chain_id, code, type, address, city, zipcode)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO stores (chain_id, code, name, type, address, city, zipcode)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (chain_id, code) DO UPDATE SET
-                type = COALESCE($3, stores.type),
-                address = COALESCE($4, stores.address),
-                city = COALESCE($5, stores.city),
-                zipcode = COALESCE($6, stores.zipcode)
+                name = COALESCE($3, stores.name),
+                type = COALESCE($4, stores.type),
+                address = COALESCE($5, stores.address),
+                city = COALESCE($6, stores.city),
+                zipcode = COALESCE($7, stores.zipcode)
             RETURNING id
             """,
             store.chain_id,
             store.code,
+            store.name or None,
             store.type,
             store.address or None,
             store.city or None,
@@ -212,8 +217,8 @@ class PostgresDatabase(Database):
             rows = await conn.fetch(
                 """
                 SELECT
-                    s.id, s.chain_id, s.code, s.type, s.address, s.city, s.zipcode,
-                    s.lat, s.lon, s.phone
+                    s.id, s.chain_id, s.code, s.name, s.type, s.address, s.city,
+                    s.zipcode, s.lat, s.lon, s.phone
                 FROM stores s
                 JOIN chains c ON s.chain_id = c.id
                 WHERE c.code = $1
@@ -274,8 +279,8 @@ class PostgresDatabase(Database):
             # Build the complete query
             base_query = """
                 SELECT
-                    s.id, s.chain_id, s.code, s.type, s.address, s.city, s.zipcode,
-                    s.lat, s.lon, s.phone
+                    s.id, s.chain_id, s.code, s.name, s.type, s.address, s.city,
+                    s.zipcode, s.lat, s.lon, s.phone
                 FROM stores s
                 JOIN chains c ON s.chain_id = c.id
             """
@@ -303,6 +308,22 @@ class PostgresDatabase(Database):
             "INSERT INTO products (ean) VALUES ($1) RETURNING id",
             ean,
         )
+
+    async def add_many_eans(self, eans: list[str]) -> dict[str, int]:
+        async with self._get_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO products (ean)
+                SELECT unnest($1::text[])
+                ON CONFLICT (ean) DO NOTHING
+                """,
+                eans,
+            )
+            rows = await conn.fetch(
+                "SELECT ean, id FROM products WHERE ean = ANY($1)",
+                eans,
+            )
+            return {row["ean"]: row["id"] for row in rows}
 
     async def get_products_by_ean(self, ean: list[str]) -> list[ProductWithId]:
         async with self._get_conn() as conn:
@@ -339,6 +360,7 @@ class PostgresDatabase(Database):
                     prices.unit_price,
                     prices.anchor_price,
                     stores.code AS store_code,
+                    stores.name AS store_name,
                     stores.type,
                     stores.address,
                     stores.city,
@@ -379,6 +401,7 @@ class PostgresDatabase(Database):
                     store=Store(
                         chain_id=row["chain_id"],
                         code=row["store_code"],
+                        name=row["store_name"],
                         type=row["type"],
                         address=row["address"],
                         city=row["city"],
@@ -551,7 +574,26 @@ class PostgresDatabase(Database):
                 date,
             )
 
+    _CONNECTION_ERRORS = (
+        asyncpg.InterfaceError,
+        asyncpg.ConnectionDoesNotExistError,
+        OSError,
+    )
+
     async def add_many_prices(self, prices: list[Price]) -> int:
+        for attempt in range(3):
+            try:
+                return await self._add_many_prices(prices)
+            except self._CONNECTION_ERRORS as e:
+                if attempt == 2:
+                    raise
+                self.logger.warning(
+                    f"Connection error in add_many_prices (attempt {attempt + 1}/3): {e}, retrying..."
+                )
+                await asyncio.sleep(2 ** attempt)
+        return 0  # unreachable
+
+    async def _add_many_prices(self, prices: list[Price]) -> int:
         async with self._atomic() as conn:
             await conn.execute(
                 """
@@ -600,12 +642,27 @@ class PostgresDatabase(Database):
                 ON CONFLICT DO NOTHING
                 """
             )
-            await conn.execute("DROP TABLE temp_prices")
             _, _, rowcount = result.split(" ")
             rowcount = int(rowcount)
             return rowcount
 
     async def add_many_chain_products(
+        self,
+        chain_products: List[ChainProduct],
+    ) -> int:
+        for attempt in range(3):
+            try:
+                return await self._add_many_chain_products(chain_products)
+            except self._CONNECTION_ERRORS as e:
+                if attempt == 2:
+                    raise
+                self.logger.warning(
+                    f"Connection error in add_many_chain_products (attempt {attempt + 1}/3): {e}, retrying..."
+                )
+                await asyncio.sleep(2 ** attempt)
+        return 0  # unreachable
+
+    async def _add_many_chain_products(
         self,
         chain_products: List[ChainProduct],
     ) -> int:
@@ -658,8 +715,6 @@ class PostgresDatabase(Database):
                 ON CONFLICT DO NOTHING
                 """
             )
-            await conn.execute("DROP TABLE temp_chain_products")
-
             _, _, rowcount = result.split(" ")
             rowcount = int(rowcount)
             return rowcount
@@ -750,13 +805,63 @@ class PostgresDatabase(Database):
         async with self._get_conn() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, chain_id, code, type, address, city, zipcode, lat, lon, phone
+                SELECT id, chain_id, code, name, type, address, city, zipcode, lat, lon, phone
                 FROM stores
                 WHERE lat IS NULL AND (address IS NOT NULL OR city IS NOT NULL)
                 ORDER BY chain_id, code
                 """
             )
             return [StoreWithId(**row) for row in rows]  # type: ignore
+
+    async def chain_has_stats(self, chain_code: str, price_date: date) -> bool:
+        async with self._get_conn() as conn:
+            return await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM chain_stats cs
+                    JOIN chains c ON c.id = cs.chain_id
+                    WHERE c.code = $1 AND cs.price_date = $2
+                )
+                """,
+                chain_code,
+                price_date,
+            )
+
+    async def get_chain_products_by_codes(
+        self, chain_id: int, codes: list[str]
+    ) -> dict[str, int]:
+        async with self._get_conn() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT code, id FROM chain_products
+                WHERE chain_id = $1 AND code = ANY($2)
+                """,
+                chain_id,
+                codes,
+            )
+            return {row["code"]: row["id"] for row in rows}
+
+    async def enrich_products_from_chain_data(self, chain_id: int) -> int:
+        async with self._get_conn() as conn:
+            result = await conn.execute(
+                """
+                UPDATE products p
+                SET
+                    brand = COALESCE(p.brand, cp.brand),
+                    name = COALESCE(p.name, cp.name),
+                    unit = COALESCE(
+                        p.unit,
+                        CASE WHEN cp.unit IN ('L', 'kg', 'm', 'kom') THEN cp.unit END
+                    )
+                FROM chain_products cp
+                WHERE cp.product_id = p.id
+                    AND cp.chain_id = $1
+                    AND (p.brand IS NULL OR p.name IS NULL OR p.unit IS NULL)
+                """,
+                chain_id,
+            )
+            _, rowcount = result.split(" ")
+            return int(rowcount)
 
     async def get_user_by_api_key(self, api_key: str) -> User | None:
         async with self._get_conn() as conn:
