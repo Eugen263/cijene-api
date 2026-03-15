@@ -184,6 +184,8 @@ async def ingest_crawl_results(
                 logger.warning(f"[{chain_code}] No stores to ingest, skipping")
                 continue
             try:
+                n_prices = sum(len(s.items) for s in stores)
+                logger.info(f"[{chain_code}] Ingesting {len(stores)} stores, {n_prices} prices ...")
                 await ingest_chain(price_date, chain_code, stores, barcodes)
             except Exception as e:
                 logger.error(f"[{chain_code}] Ingest failed: {e}", exc_info=True)
