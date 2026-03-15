@@ -65,6 +65,12 @@ jobs:
           DB_DSN: postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ vars.DB_HOST }}:${{ vars.DB_PORT }}/${{ vars.DB_NAME }}
         run: uv run -m service.db.geocode
 
+      - name: Locate stores from OSM
+        if: ${{ !inputs.skip_geocode }}
+        env:
+          DB_DSN: postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ vars.DB_HOST }}:${{ vars.DB_PORT }}/${{ vars.DB_NAME }}
+        run: uv run -m service.db.store_locator
+
       - name: Upload archive as artifact
         uses: actions/upload-artifact@v4
         with:
