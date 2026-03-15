@@ -37,16 +37,18 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Run crawler
+      - name: Crawl and import data
+        env:
+          DB_DSN: postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ vars.DB_HOST }}:${{ vars.DB_PORT }}/${{ vars.DB_NAME }}
         run: |
-          ARGS=""
+          ARGS="--db-direct --verbose info"
           if [ -n "${{ inputs.date }}" ]; then
             ARGS="$ARGS --date ${{ inputs.date }}"
           fi
           if [ -n "${{ inputs.chains }}" ]; then
             ARGS="$ARGS --chain ${{ inputs.chains }}"
           fi
-          uv run -m crawler.cli.crawl /tmp/cijene-output --verbose info $ARGS
+          uv run -m crawler.cli.crawl /tmp/cijene-output $ARGS
 
       - name: Determine output date
         id: date
@@ -55,22 +57,6 @@ jobs:
             echo "value=${{ inputs.date }}" >> "$GITHUB_OUTPUT"
           else
             echo "value=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Import data into database
-        env:
-          DB_DSN: postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ vars.DB_HOST }}:${{ vars.DB_PORT }}/${{ vars.DB_NAME }}
-        run: |
-          DATE="${{ steps.date.outputs.value }}"
-          ZIP="/tmp/cijene-output/$DATE.zip"
-          DIR="/tmp/cijene-output/$DATE"
-          if [ -f "$ZIP" ]; then
-            uv run -m service.db.import --debug "$ZIP"
-          elif [ -d "$DIR" ]; then
-            uv run -m service.db.import --debug "$DIR"
-          else
-            echo "No output found for date $DATE"
-            exit 1
           fi
 
       - name: Geocode new stores

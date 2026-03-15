@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
-from datetime import datetime
+import asyncio
+import datetime
 import logging
 import sys
 from pathlib import Path
@@ -13,13 +14,13 @@ def parse_date(date_str):
     if not date_str:
         return None
     try:
-        return datetime.strptime(date_str, "%Y-%m-%d").date()
+        return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         raise argparse.ArgumentTypeError("Date must be in YYYY-MM-DD format")
 
 
-def setup_logging(log_level):
-    """Configure logging for the crawler package."""
+def setup_logging(log_level, db_direct: bool = False):
+    """Configure logging for the crawler package (and ingest package when db_direct)."""
     level_map = {
         "debug": logging.DEBUG,
         "info": logging.INFO,
@@ -35,13 +36,15 @@ def setup_logging(log_level):
         stream=sys.stderr,
     )
 
-    # Only enable logs from the crawler package
-    for handler in logging.root.handlers:
-        handler.addFilter(lambda record: record.name.startswith("crawler"))
+    allowed_prefixes = ("crawler",) if not db_direct else ("crawler", "ingest", "service.db")
 
-    # Set other loggers to a higher level to suppress their messages
+    for handler in logging.root.handlers:
+        handler.addFilter(
+            lambda record, p=allowed_prefixes: any(record.name.startswith(p) for p in p)
+        )
+
     for logger_name in logging.root.manager.loggerDict:
-        if not logger_name.startswith("crawler"):
+        if not any(logger_name.startswith(p) for p in allowed_prefixes):
             logging.getLogger(logger_name).setLevel(logging.ERROR)
 
 
@@ -81,11 +84,23 @@ def main():
         default="warning",
         help="Set verbosity level (default: warning)",
     )
+    parser.add_argument(
+        "--db-direct",
+        action="store_true",
+        help=(
+            "Write crawled data directly to the database (requires DB_DSN env var).\n"
+            "CSV files and ZIP archive are still saved as backup."
+        ),
+    )
+    parser.add_argument(
+        "--skip-stats",
+        action="store_true",
+        help="Skip computing chain stats after DB import (only with --db-direct)",
+    )
 
     args = parser.parse_args()
 
-    # Set up logging
-    setup_logging(args.verbose)
+    setup_logging(args.verbose, db_direct=args.db_direct)
 
     if args.list:
         print("Supported retail chains:")
@@ -113,22 +128,40 @@ def main():
                     f"Unknown chain '{chain_name}'. Available chains: {', '.join(available_chains)}"
                 )
 
-    # Run the crawler
     try:
-        # Ensure date is None if not provided, so crawl() uses its default
-        crawl_date = args.date  # parse_date already handles empty string to None
-
+        crawl_date = args.date
         chains_txt = (
             ", ".join(chains_to_crawl) if chains_to_crawl else "all retail chains"
         )
         date_txt = args.date.strftime("%Y-%m-%d") if args.date else "today"
         print(f"Fetching price data from {chains_txt} for {date_txt} ...", flush=True)
 
-        zip_path = crawl(args.output_path, crawl_date, chains_to_crawl)
+        zip_path, chain_stores = crawl(
+            args.output_path,
+            crawl_date,
+            chains_to_crawl,
+            db_direct=args.db_direct,
+        )
         print(f"Archive created: {zip_path}")
+
+        if args.db_direct and chain_stores:
+            # Lazy import keeps the crawler usable without asyncpg installed
+            from service.db.ingest import ingest_crawl_results
+
+            effective_date = crawl_date or datetime.date.today()
+            print(f"Ingesting data into database for {effective_date:%Y-%m-%d} ...", flush=True)
+            asyncio.run(
+                ingest_crawl_results(
+                    effective_date,
+                    chain_stores,
+                    compute_stats_flag=not args.skip_stats,
+                )
+            )
+            print("Database import complete.")
+
         return 0
     except Exception as e:
-        print(f"Error during crawling: {e}")
+        print(f"Error: {e}")
         return 1
 
 
