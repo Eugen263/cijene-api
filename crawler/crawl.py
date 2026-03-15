@@ -74,9 +74,15 @@ class CrawlResult:
     n_stores: int = 0
     n_products: int = 0
     n_prices: int = 0
+    stores: list | None = None  # populated when return_stores=True
 
 
-def crawl_chain(chain: str, date: datetime.date, path: Path) -> CrawlResult:
+def crawl_chain(
+    chain: str,
+    date: datetime.date,
+    path: Path,
+    return_stores: bool = False,
+) -> CrawlResult:
     """
     Crawl a specific retail chain for product/pricing data and save it.
 
@@ -84,6 +90,8 @@ def crawl_chain(chain: str, date: datetime.date, path: Path) -> CrawlResult:
         chain: The name of the retail chain to crawl.
         date: The date for which to fetch the product data.
         path: The directory path where the data will be saved.
+        return_stores: If True, populate CrawlResult.stores with the raw
+            Store objects for direct DB ingestion. CSVs are always written.
     """
 
     crawler_class = CRAWLERS.get(chain)
@@ -117,6 +125,7 @@ def crawl_chain(chain: str, date: datetime.date, path: Path) -> CrawlResult:
         n_stores=len(stores),
         n_products=len(all_products),
         n_prices=sum(len(store.items) for store in stores),
+        stores=stores if return_stores else None,
     )
 
 
@@ -124,7 +133,8 @@ def crawl(
     root: Path,
     date: datetime.date | None = None,
     chains: list[str] | None = None,
-) -> Path:
+    db_direct: bool = False,
+) -> tuple[Path, dict[str, list] | None]:
     """
     Crawl multiple retail chains for product/pricing data and save it.
 
@@ -132,9 +142,12 @@ def crawl(
         root: The base directory path where the data will be saved.
         date: The date for which to fetch the product data. If None, uses today's date.
         chains: List of retail chain names to crawl. If None, crawls all available chains.
+        db_direct: If True, return raw Store objects per chain for direct DB ingestion.
+            CSVs and ZIP archive are always written regardless of this flag.
 
     Returns:
-        Path to the created ZIP archive file.
+        Tuple of (zip_path, chain_stores) where chain_stores is a dict mapping
+        chain code to list of Store objects when db_direct=True, or None otherwise.
     """
 
     if chains is None:
@@ -152,7 +165,7 @@ def crawl(
     t0 = time()
     for chain in chains:
         logger.info(f"Starting crawl for {chain} on {date:%Y-%m-%d}")
-        r = crawl_chain(chain, date, path / chain)
+        r = crawl_chain(chain, date, path / chain, return_stores=db_direct)
         results[chain] = r
     t1 = time()
 
@@ -166,4 +179,13 @@ def crawl(
     create_archive(path, zip_path)
 
     logger.info(f"Created archive {zip_path} with data for {date:%Y-%m-%d}")
-    return zip_path
+
+    chain_stores = None
+    if db_direct:
+        chain_stores = {
+            chain: r.stores
+            for chain, r in results.items()
+            if r.stores is not None
+        }
+
+    return zip_path, chain_stores
